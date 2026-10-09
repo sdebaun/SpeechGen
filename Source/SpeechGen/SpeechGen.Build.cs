@@ -34,7 +34,9 @@ public class SpeechGen : ModuleRules
 
         bool IsBuildPluginHost = Target.ProjectFile != null
             && Path.GetFileNameWithoutExtension(Target.ProjectFile.FullName).Equals("HostProject", StringComparison.OrdinalIgnoreCase);
-        if (Target.Platform == UnrealTargetPlatform.Win64 && !Target.bBuildEditor && Target.ProjectFile != null
+        bool IsRuntimePlatform = Target.Platform == UnrealTargetPlatform.Win64
+            || Target.Platform == UnrealTargetPlatform.Mac;
+        if (IsRuntimePlatform && !Target.bBuildEditor && Target.ProjectFile != null
             && !IsBuildPluginHost)
         {
             StageInstalledRuntime(Target);
@@ -43,15 +45,17 @@ public class SpeechGen : ModuleRules
 
     private void StageInstalledRuntime(ReadOnlyTargetRules Target)
     {
+        // Same platform folder name that USpeechGenSubsystem::ResolveRuntimeDirectory derives at runtime.
+        string PlatformName = Target.Platform.ToString();
         string RuntimeDirectory = Path.Combine(Target.ProjectFile.Directory.FullName, "Saved", "SpeechGen",
-            "Runtimes", "Kokoro", "Win64", RuntimeVersion);
+            "Runtimes", "Kokoro", PlatformName, RuntimeVersion);
         IReadOnlyList<string> Files = CollectRuntimeFiles(RuntimeDirectory,
             Path.Combine(PluginDirectory, "Resources", "RuntimeManifest.json"));
 
         foreach (string RelativeFile in Files)
         {
             string SourceFile = Path.Combine(RuntimeDirectory, RelativeFile);
-            string StagedFile = Path.Combine("$(TargetOutputDir)", "SpeechGen", "Runtimes", "Kokoro", "Win64",
+            string StagedFile = Path.Combine("$(TargetOutputDir)", "SpeechGen", "Runtimes", "Kokoro", PlatformName,
                 RuntimeVersion, RelativeFile);
             RuntimeDependencies.Add(StagedFile, SourceFile, StagedFileType.NonUFS);
         }

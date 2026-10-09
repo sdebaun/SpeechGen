@@ -169,10 +169,14 @@ void USpeechGenSubsystem::Deinitialize()
 
 FString USpeechGenSubsystem::ResolveRuntimeDirectory()
 {
+	// The runtime data is platform-neutral; the folder carries the UBT platform name (Win64, Mac, ...)
+	// so it matches the directory SpeechGen.Build.cs stages for packaged builds.
+	const FString PlatformRuntimeDirectory = FPaths::Combine(TEXT("SpeechGen/Runtimes/Kokoro"),
+		FPlatformMisc::GetUBTPlatform(), RuntimeVersion);
 #if WITH_EDITOR
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("SpeechGen/Runtimes/Kokoro/Win64"), RuntimeVersion);
+	return FPaths::Combine(FPaths::ProjectSavedDir(), PlatformRuntimeDirectory);
 #else
-	return FPaths::Combine(FPlatformProcess::BaseDir(), TEXT("SpeechGen/Runtimes/Kokoro/Win64"), RuntimeVersion);
+	return FPaths::Combine(FPlatformProcess::BaseDir(), PlatformRuntimeDirectory);
 #endif
 }
 
@@ -204,8 +208,7 @@ void USpeechGenSubsystem::BeginRuntimeLoad()
 
 	const FString RuntimeDirectory = ResolveRuntimeDirectory();
 	const FString ModelPath = FPaths::Combine(RuntimeDirectory, TEXT("onnx/model_cpu_mixed.onnx"));
-	TArray64<uint8> ModelBytes;
-	if (!FFileHelper::LoadFileToArray(ModelBytes, *ModelPath))
+	if (IFileManager::Get().FileSize(*ModelPath) <= 0)
 	{
 		SetRuntimeState(ESpeechGenRuntimeState::Unavailable,
 			FString::Printf(TEXT("SpeechGen runtime is not installed: %s"), *ModelPath));
@@ -213,13 +216,15 @@ void USpeechGenSubsystem::BeginRuntimeLoad()
 	}
 
 	SetRuntimeState(ESpeechGenRuntimeState::Loading);
+	// Created here, filled on the worker: reading and copying the 178 MB model on the game thread
+	// cost a 66 ms frame. The UPROPERTY keeps it alive, and StopRuntime drains the worker before
+	// releasing it.
 	ModelData = NewObject<UNNEModelData>(this);
-	ModelData->Init(TEXT("onnx"), ModelBytes);
 
 	TWeakObjectPtr<USpeechGenSubsystem> WeakThis(this);
 	TObjectPtr<UNNEModelData> LoadedModelData = ModelData;
 	const uint64 Generation = RuntimeGeneration;
-	AsyncPool(*WorkerPool, [WeakThis, LoadedModelData, RuntimeDirectory, Generation]() mutable
+	AsyncPool(*WorkerPool, [WeakThis, LoadedModelData, RuntimeDirectory, ModelPath, Generation]() mutable
 	{
 		TSharedPtr<UE::NNE::IModelCPU> LoadedModel;
 		TSharedPtr<UE::NNE::IModelInstanceCPU> LoadedInstance;
@@ -227,12 +232,19 @@ void USpeechGenSubsystem::BeginRuntimeLoad()
 		FString Error;
 
 		const TWeakInterfacePtr<INNERuntimeCPU> Runtime = UE::NNE::GetRuntime<INNERuntimeCPU>(TEXT("NNERuntimeORTCpu"));
-		if (!Runtime.IsValid())
+		TArray64<uint8> ModelBytes;
+		if (!FFileHelper::LoadFileToArray(ModelBytes, *ModelPath))
+		{
+			Error = FString::Printf(TEXT("Unable to read the Kokoro model: %s"), *ModelPath);
+		}
+		else if (!Runtime.IsValid())
 		{
 			Error = TEXT("NNERuntimeORTCpu is unavailable.");
 		}
 		else
 		{
+			LoadedModelData->Init(TEXT("onnx"), ModelBytes);
+			ModelBytes.Empty();
 			LoadedModel = Runtime->CreateModelCPU(LoadedModelData);
 			if (!LoadedModel)
 			{

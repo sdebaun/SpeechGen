@@ -6,7 +6,7 @@ SpeechGen is an Unreal Engine 5.7 plugin for fully local multilingual speech syn
 
 - Opening an editor project with SpeechGen enabled starts runtime preparation automatically.
 - Project Settings > Plugins > SpeechGen exposes install/update and reinstall actions.
-- The editor downloads only `v1.0-cpu-mixed.2` from the public SpeechGen runtime release and atomically promotes it into `Saved/SpeechGen/Runtimes/Kokoro/Win64/v1.0-cpu-mixed.2` after required file sizes are complete.
+- The editor downloads only `v1.0-cpu-mixed.2` from the public SpeechGen runtime release and atomically promotes it into `Saved/SpeechGen/Runtimes/Kokoro/<Platform>/v1.0-cpu-mixed.2` (`Win64`, `Mac`) after required file sizes are complete.
 - The runtime contains one model, 48 supported voice/style tables, English pronunciation data, and the generated Mandarin IPA dictionary. It contains no benchmark audio, reports, rejected models, full-FP16 model, community mixed model, French voices, or Japanese voices.
 - Game and Shipping builds require a complete installed runtime. Packaging stages it beside the executable as NonUFS data; shipped players never download model files.
 - Runtime files and generated binaries are deliberately excluded from Git and Git LFS.
