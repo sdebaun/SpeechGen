@@ -10,6 +10,7 @@ SpeechGen is an Unreal Engine 5.7 plugin for fully local multilingual speech syn
 - The runtime contains one model, 48 supported voice/style tables, English pronunciation data, and the generated Mandarin IPA dictionary. It contains no benchmark audio, reports, rejected models, full-FP16 model, community mixed model, French voices, or Japanese voices.
 - Game and Shipping builds require a complete installed runtime. Packaging stages it beside the executable as NonUFS data; shipped players never download model files.
 - Runtime files and generated binaries are deliberately excluded from Git and Git LFS.
+- Headless synthesis for testing and benchmarking: `UnrealEditor-Cmd <Project>.uproject -run=SpeechGenEditor.SpeechGenSynth -Text="..." -Voice=am_adam:0.7,bm_george:0.3 -Out=out.wav -unattended -nullrhi`, or `-Batch=lines.tsv` (one `out<TAB>voice<TAB>text[<TAB>speed]` per line) to load the model once and log per-line latency and real-time factor to `timings.csv`.
 
 ## Speech pipeline
 
