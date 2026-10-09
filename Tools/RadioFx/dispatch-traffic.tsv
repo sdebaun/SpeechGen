@@ -1,0 +1,52 @@
+# Demo dispatch radio traffic for SpeechGenSynth batch mode; the same script SpeechGenRadioDemo plays in engine.
+# out <TAB> voice blend <TAB> text <TAB> speed <TAB> gap before, in seconds (SpeechGenSynth ignores the fifth column;
+# demo.sh builds the montage from it). Out paths are relative to -OutDir.
+# Numbers are written as words: the English normalizer reads "430" as "four hundred thirty".
+# "[pNNN]" is SpeechGen pause markup: the line is split there and NNN ms of silence goes in. Only between clauses of
+# long lines: a short chunk cut off from the words after it loses vowel quality, so calls, replies and leading call
+# signs stay whole.
+#
+# Protocol:
+#   First contact is call and wait: "Dispatch, Echo Two." / "Echo Two, go ahead." / then the traffic.
+#   Once a call is established, a follow-up is one transmission, no handshake: "Dispatch, Echo Two, medical is on scene and released us."
+#   A reply to related traffic is one shot if it comes seconds later, a full call if minutes later (sim time).
+#   Priority traffic: "Priority, priority, priority." / "Station with priority traffic, go ahead." / the unit names itself with its traffic.
+#   Other units hold routine traffic until Dispatch releases the channel; Kilo Five's report waits for that.
+#   Two seconds between transmissions leaves room for priority traffic; a priority call is answered at once.
+#
+# Cast (the male voices sit at least 25 Hz of median pitch apart; speeds near 1.0, pitch does the separating):
+#   Dispatch      am_michael:0.7,bm_george:0.3  speed 1.0
+#   Echo Two      am_eric:0.7,am_santa:0.3      speed 1.0   highest male
+#   Sierra Nine   am_onyx:0.7,bm_lewis:0.3      speed 0.95  lowest, rough
+#   Kilo Five     af_bella:0.7,af_sarah:0.3     speed 1.0
+#   Victor Three  bf_emma:0.7,bf_isabella:0.3   speed 1.0
+01-echo.wav	am_eric:0.7,am_santa:0.3	Dispatch, Echo Two.	1.0	0
+02-dispatch.wav	am_michael:0.7,bm_george:0.3	Echo Two, go ahead.	1.0	2.0
+03-echo.wav	am_eric:0.7,am_santa:0.3	I need medical at the north gate, [p250] for a visitor with a twisted ankle.	1.0	2.0
+04-dispatch.wav	am_michael:0.7,bm_george:0.3	Copy, sending medical to the north gate, [p200] for a twisted ankle.	1.0	2.2
+05-kilo.wav	af_bella:0.7,af_sarah:0.3	Dispatch, Kilo Five.	1.0	2.4
+06-dispatch.wav	am_michael:0.7,bm_george:0.3	Kilo Five, go ahead.	1.0	2.0
+07-kilo.wav	af_bella:0.7,af_sarah:0.3	We've got a noise complaint at the loading dock. [p250] A generator running, facing the hotel.	1.0	2.0
+08-dispatch.wav	am_michael:0.7,bm_george:0.3	Copy, Kilo Five. See if they'll shut it down.	1.0	2.0
+09-echo.wav	am_eric:0.7,am_santa:0.3	Dispatch, Echo Two, medical is on scene and released us. [p250] Resuming patrol.	1.0	2.6
+10-dispatch.wav	am_michael:0.7,bm_george:0.3	Copy, Echo Two.	1.0	2.0
+11-sierra.wav	am_onyx:0.7,bm_lewis:0.3	Priority, priority, priority.	0.95	0.8
+12-dispatch.wav	am_michael:0.7,bm_george:0.3	Station with priority traffic, go ahead.	1.0	1.0
+13-sierra.wav	am_onyx:0.7,bm_lewis:0.3	Dispatch, Sierra Nine: missing person at the main entrance. [p300] Elderly man, [p200] grey coat, [p200] walking cane.	0.95	1.2
+14-dispatch.wav	am_michael:0.7,bm_george:0.3	All stations, all stations, this is Dispatch. We have a missing person, [p200] last seen at the main entrance. [p300] Grey coat, [p200] walking cane. [p400] Please hold routine traffic.	1.0	2.0
+15-dispatch.wav	am_michael:0.7,bm_george:0.3	Sierra Nine, Dispatch: anything else you can tell me about him?	1.0	2.4
+16-sierra.wav	am_onyx:0.7,bm_lewis:0.3	Dispatch, Sierra Nine: his name is Walter. [p300] Last seen about ten minutes ago, [p200] heading for the parking garage.	0.95	2.0
+17-victor.wav	bf_emma:0.7,bf_isabella:0.3	Dispatch, Victor Three, I have eyes on possible missing person with grey coat.	1.0	2.2
+18-dispatch.wav	am_michael:0.7,bm_george:0.3	Copy, Victor Three. Stay with him.	1.0	2.0
+19-victor.wav	bf_emma:0.7,bf_isabella:0.3	Dispatch, Victor Three.	1.0	2.6
+20-dispatch.wav	am_michael:0.7,bm_george:0.3	Victor Three, go ahead.	1.0	2.0
+21-victor.wav	bf_emma:0.7,bf_isabella:0.3	The man is confirmed, [p200] and reunited with his family at the main entrance.	1.0	2.0
+22-dispatch.wav	am_michael:0.7,bm_george:0.3	All stations, all stations, this is Dispatch. The missing person is found. [p300] Thank you all. [p400] You may resume routine traffic.	1.0	2.2
+23-kilo.wav	af_bella:0.7,af_sarah:0.3	Dispatch, Kilo Five, they shut it down. [p250] We're clear, [p150] resuming patrol.	1.0	2.4
+24-dispatch.wav	am_michael:0.7,bm_george:0.3	Copy, Kilo Five. Thanks for taking care of that.	1.0	2.0
+# The ear test: each voice says its own call sign, in cast order.
+lineup-1-dispatch.wav	am_michael:0.7,bm_george:0.3	This is Dispatch.	1.0
+lineup-2-echo.wav	am_eric:0.7,am_santa:0.3	This is Echo Two.	1.0
+lineup-3-sierra.wav	am_onyx:0.7,bm_lewis:0.3	This is Sierra Nine.	0.95
+lineup-4-kilo.wav	af_bella:0.7,af_sarah:0.3	This is Kilo Five.	1.0
+lineup-5-victor.wav	bf_emma:0.7,bf_isabella:0.3	This is Victor Three.	1.0

@@ -23,11 +23,20 @@
       "Name": "SpeechGenEditor",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit"
+    },
+    {
+      "Name": "SpeechGenRadio",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
     }
   ],
   "Plugins": [
     {
       "Name": "NNERuntimeORT",
+      "Enabled": true
+    },
+    {
+      "Name": "Synthesis",
       "Enabled": true
     }
   ]
