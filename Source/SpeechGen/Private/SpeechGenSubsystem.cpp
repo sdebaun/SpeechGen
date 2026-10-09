@@ -78,6 +78,134 @@ namespace
 		}
 		return true;
 	}
+	// Below this a sample counts as silence when trimming chunk seams (about -48 dBFS).
+	constexpr float SeamSilence = 0.004f;
+	constexpr int32 MaxPauseMilliseconds = 5000;
+
+	bool RunKokoro(UE::NNE::IModelInstanceCPU& Instance, TArray<int64>& TokenIds, TArray<float>& Style,
+		float Speed, TArray<float>& OutWaveform, FString& OutError)
+	{
+		TArray<UE::NNE::FTensorShape> InputShapes;
+		TArray<UE::NNE::FTensorBindingCPU> InputBindings;
+		for (const UE::NNE::FTensorDesc& Desc : Instance.GetInputTensorDescs())
+		{
+			if (Desc.GetName() == TEXT("tokens"))
+			{
+				InputShapes.Add(UE::NNE::FTensorShape::Make({1, static_cast<uint32>(TokenIds.Num())}));
+				InputBindings.Add({TokenIds.GetData(), static_cast<uint64>(TokenIds.Num() * sizeof(int64))});
+			}
+			else if (Desc.GetName() == TEXT("style"))
+			{
+				InputShapes.Add(UE::NNE::FTensorShape::Make({1, StyleDimension}));
+				InputBindings.Add({Style.GetData(), static_cast<uint64>(Style.Num() * sizeof(float))});
+			}
+			else if (Desc.GetName() == TEXT("speed"))
+			{
+				InputShapes.Add(UE::NNE::FTensorShape::Make({1}));
+				InputBindings.Add({&Speed, sizeof(float)});
+			}
+			else
+			{
+				OutError = FString::Printf(TEXT("Unexpected Kokoro input tensor: %s"), *Desc.GetName());
+				return false;
+			}
+		}
+
+		OutWaveform.SetNumUninitialized(TokenIds.Num() * MaxSamplesPerToken);
+		const UE::NNE::FTensorBindingCPU OutputBinding{OutWaveform.GetData(),
+			static_cast<uint64>(OutWaveform.Num() * sizeof(float))};
+		if (Instance.SetInputTensorShapes(InputShapes) != UE::NNE::IModelInstanceCPU::ESetInputTensorShapesStatus::Ok
+			|| Instance.RunSync(InputBindings, {OutputBinding}) != UE::NNE::IModelInstanceCPU::ERunSyncStatus::Ok)
+		{
+			OutError = TEXT("Kokoro ONNX inference failed.");
+			return false;
+		}
+		const TConstArrayView<UE::NNE::FTensorShape> OutputShapes = Instance.GetOutputTensorShapes();
+		if (OutputShapes.Num() != 1 || OutputShapes[0].Volume() > static_cast<uint64>(OutWaveform.Num()))
+		{
+			OutError = TEXT("Kokoro output exceeded the deterministic waveform buffer.");
+			return false;
+		}
+		OutWaveform.SetNum(static_cast<int32>(OutputShapes[0].Volume()), EAllowShrinking::No);
+		return true;
+	}
+
+	// Joins one chunk onto the line. At a seam the model's own lead-in and tail silence are trimmed (keeping
+	// 20 ms of air) so the pause between chunks is the one the markup asked for.
+	void AppendChunkWaveform(TConstArrayView<float> Chunk, const bool bTrimLead, const bool bTrimTail,
+		const int32 PauseSamples, TArray<float>& InOutWaveform)
+	{
+		const int32 Air = USpeechGenSubsystem::SampleRate / 50;
+		int32 First = 0;
+		int32 Last = Chunk.Num() - 1;
+		if (bTrimLead)
+		{
+			while (First < Chunk.Num() && FMath::Abs(Chunk[First]) < SeamSilence)
+			{
+				++First;
+			}
+			First = FMath::Max(0, First - Air);
+		}
+		if (bTrimTail)
+		{
+			while (Last > First && FMath::Abs(Chunk[Last]) < SeamSilence)
+			{
+				--Last;
+			}
+			Last = FMath::Min(Chunk.Num() - 1, Last + Air);
+		}
+		InOutWaveform.AddZeroed(PauseSamples);
+		if (Last >= First)
+		{
+			InOutWaveform.Append(Chunk.Slice(First, Last - First + 1));
+		}
+	}
+}
+
+void USpeechGenSubsystem::SplitPauseMarkup(const FString& Text, TArray<FSpeechGenTextChunk>& OutChunks)
+{
+	OutChunks.Reset();
+	FString Current;
+	auto Flush = [&OutChunks, &Current](const int32 PauseAfterMs)
+	{
+		if (!Current.TrimStartAndEnd().IsEmpty())
+		{
+			FSpeechGenTextChunk& Chunk = OutChunks.AddDefaulted_GetRef();
+			Chunk.Text = Current.TrimStartAndEnd();
+			Chunk.PauseAfterMs = PauseAfterMs;
+		}
+		else if (!OutChunks.IsEmpty())
+		{
+			// Back-to-back markers add up; a marker before any text has nothing to follow and is dropped.
+			OutChunks.Last().PauseAfterMs = FMath::Min(OutChunks.Last().PauseAfterMs + PauseAfterMs, MaxPauseMilliseconds);
+		}
+		Current.Reset();
+	};
+	for (int32 Index = 0; Index < Text.Len(); ++Index)
+	{
+		if (Text[Index] == TEXT('[') && Index + 2 < Text.Len() && (Text[Index + 1] == TEXT('p') || Text[Index + 1] == TEXT('P')))
+		{
+			int32 Cursor = Index + 2;
+			int32 Milliseconds = 0;
+			while (Cursor < Text.Len() && FChar::IsDigit(Text[Cursor]))
+			{
+				Milliseconds = FMath::Min(Milliseconds * 10 + (Text[Cursor] - TEXT('0')), MaxPauseMilliseconds);
+				++Cursor;
+			}
+			if (Cursor > Index + 2 && Cursor < Text.Len() && Text[Cursor] == TEXT(']'))
+			{
+				Flush(Milliseconds);
+				Index = Cursor;
+				continue;
+			}
+		}
+		Current.AppendChar(Text[Index]);
+	}
+	Flush(0);
+	if (!OutChunks.IsEmpty())
+	{
+		OutChunks.Last().PauseAfterMs = 0;
+	}
 }
 
 struct USpeechGenSubsystem::FResolvedRequest
@@ -224,7 +352,11 @@ void USpeechGenSubsystem::BeginRuntimeLoad()
 	TWeakObjectPtr<USpeechGenSubsystem> WeakThis(this);
 	TObjectPtr<UNNEModelData> LoadedModelData = ModelData;
 	const uint64 Generation = RuntimeGeneration;
-	AsyncPool(*WorkerPool, [WeakThis, LoadedModelData, RuntimeDirectory, ModelPath, Generation]() mutable
+	// Copied on the game thread; the worker never touches the settings object.
+	TArray<FSpeechGenPronunciation> PronunciationOverrides =
+		GetDefault<USpeechGenProjectSettings>()->PronunciationOverrides;
+	AsyncPool(*WorkerPool, [WeakThis, LoadedModelData, RuntimeDirectory, ModelPath, Generation,
+		PronunciationOverrides = MoveTemp(PronunciationOverrides)]() mutable
 	{
 		TSharedPtr<UE::NNE::IModelCPU> LoadedModel;
 		TSharedPtr<UE::NNE::IModelInstanceCPU> LoadedInstance;
@@ -264,6 +396,17 @@ void USpeechGenSubsystem::BeginRuntimeLoad()
 		{
 			LoadedInstance.Reset();
 			LoadedModel.Reset();
+		}
+		else if (Error.IsEmpty() && !PronunciationOverrides.IsEmpty())
+		{
+			TArray<FString> Warnings;
+			const int32 Applied = LoadedPhonemizer->ApplyPronunciationOverrides(PronunciationOverrides, Warnings);
+			for (const FString& Warning : Warnings)
+			{
+				UE_LOG(LogSpeechGen, Warning, TEXT("%s"), *Warning);
+			}
+			UE_LOG(LogSpeechGen, Log, TEXT("Applied %d of %d pronunciation overrides."), Applied,
+				PronunciationOverrides.Num());
 		}
 
 		AsyncTask(ENamedThreads::GameThread,
@@ -353,6 +496,19 @@ FGuid USpeechGenSubsystem::SynthesizeAsync(const FSpeechGenRequest& Request)
 		});
 	}
 	return SegmentId;
+}
+
+bool USpeechGenSubsystem::PhonemizeText(const ESpeechGenLanguage Language, const FString& Text,
+	FString& OutPhonemes, FString& OutError) const
+{
+	const TSharedPtr<FKokoroPhonemizer> Loaded = Phonemizer;
+	if (!Loaded)
+	{
+		OutError = TEXT("SpeechGen runtime is not ready.");
+		return false;
+	}
+	TArray<int64> TokenIds;
+	return Loaded->Encode(Language, Text, TokenIds, OutPhonemes, OutError);
 }
 
 void USpeechGenSubsystem::SetAuthoredCacheDirectory(const FString& Directory)
@@ -469,109 +625,70 @@ void USpeechGenSubsystem::ExecuteRequest(FResolvedRequest Request)
 		return;
 	}
 
-	TArray<int64> TokenIds;
-	FString Phonemes;
-	FString Error;
-	const double PhonemizeStartedAtSeconds = FPlatformTime::Seconds();
-	if (!Phonemizer->Encode(Request.Language, Request.Text, TokenIds, Phonemes, Error))
-	{
-		UE_LOG(LogSpeechGen, Warning, TEXT("Phonemization failed Turn=%s Segment=%s: %s"),
-			*Request.TurnId.ToString(EGuidFormats::DigitsWithHyphensLower),
-			*Request.SegmentId.ToString(EGuidFormats::DigitsWithHyphensLower), *Error);
-		AsyncTask(ENamedThreads::GameThread, [WeakThis = TWeakObjectPtr<USpeechGenSubsystem>(this), Request, Error]()
-		{
-			if (USpeechGenSubsystem* Subsystem = WeakThis.Get())
-			{
-				if (!IsRequestCancelled(Request))
-				{
-					Subsystem->OnRequestFailed.Broadcast(Request.TurnId, Request.SegmentId, Error);
-				}
-				Subsystem->MarkRequestFinished(Request.TurnId, Request.CancellationFlag);
-			}
-		});
-		return;
-	}
-	const double PhonemizeMilliseconds = (FPlatformTime::Seconds() - PhonemizeStartedAtSeconds) * 1000.0;
-
-	const int32 PhonemeCount = TokenIds.Num() - 2;
-	TArray<float> Style;
-	const double StyleStartedAtSeconds = FPlatformTime::Seconds();
-	if (!LoadVoiceStyle(ResolveRuntimeDirectory(), Request.VoiceBlend, PhonemeCount, Style, Error))
-	{
-		UE_LOG(LogSpeechGen, Warning, TEXT("Voice style load failed Turn=%s Segment=%s: %s"),
-			*Request.TurnId.ToString(EGuidFormats::DigitsWithHyphensLower),
-			*Request.SegmentId.ToString(EGuidFormats::DigitsWithHyphensLower), *Error);
-		AsyncTask(ENamedThreads::GameThread, [WeakThis = TWeakObjectPtr<USpeechGenSubsystem>(this), Request, Error]()
-		{
-			if (USpeechGenSubsystem* Subsystem = WeakThis.Get())
-			{
-				if (!IsRequestCancelled(Request))
-				{
-					Subsystem->OnRequestFailed.Broadcast(Request.TurnId, Request.SegmentId, Error);
-				}
-				Subsystem->MarkRequestFinished(Request.TurnId, Request.CancellationFlag);
-			}
-		});
-		return;
-	}
-	const double StyleMilliseconds = (FPlatformTime::Seconds() - StyleStartedAtSeconds) * 1000.0;
-
-	TArray<UE::NNE::FTensorShape> InputShapes;
-	TArray<UE::NNE::FTensorBindingCPU> InputBindings;
-	for (const UE::NNE::FTensorDesc& Desc : ModelInstance->GetInputTensorDescs())
-	{
-		if (Desc.GetName() == TEXT("tokens"))
-		{
-			InputShapes.Add(UE::NNE::FTensorShape::Make({1, static_cast<uint32>(TokenIds.Num())}));
-			InputBindings.Add({TokenIds.GetData(), static_cast<uint64>(TokenIds.Num() * sizeof(int64))});
-		}
-		else if (Desc.GetName() == TEXT("style"))
-		{
-			InputShapes.Add(UE::NNE::FTensorShape::Make({1, StyleDimension}));
-			InputBindings.Add({Style.GetData(), static_cast<uint64>(Style.Num() * sizeof(float))});
-		}
-		else if (Desc.GetName() == TEXT("speed"))
-		{
-			InputShapes.Add(UE::NNE::FTensorShape::Make({1}));
-			InputBindings.Add({&Request.Speed, sizeof(float)});
-		}
-		else
-		{
-			Error = FString::Printf(TEXT("Unexpected Kokoro input tensor: %s"), *Desc.GetName());
-			break;
-		}
-	}
+	// "[p400]" splits the line: each part is its own inference, joined by 400 ms of silence (see SplitPauseMarkup).
+	TArray<FSpeechGenTextChunk> Chunks;
+	SplitPauseMarkup(Request.Text, Chunks);
 
 	TArray<float> Waveform;
-	Waveform.SetNumUninitialized(TokenIds.Num() * MaxSamplesPerToken);
-	const UE::NNE::FTensorBindingCPU OutputBinding{Waveform.GetData(),
-		static_cast<uint64>(Waveform.Num() * sizeof(float))};
-	const double InferenceStartedAtSeconds = FPlatformTime::Seconds();
-	if (Error.IsEmpty()
-		&& ModelInstance->SetInputTensorShapes(InputShapes) == UE::NNE::IModelInstanceCPU::ESetInputTensorShapesStatus::Ok
-		&& ModelInstance->RunSync(InputBindings, {OutputBinding}) == UE::NNE::IModelInstanceCPU::ERunSyncStatus::Ok)
+	FString Phonemes;
+	FString Error;
+	int32 TokenCount = 0;
+	double PhonemizeMilliseconds = 0.0;
+	double StyleMilliseconds = 0.0;
+	double InferenceMilliseconds = 0.0;
+	// Every chunk of a line speaks with the style row for the whole line's length. Kokoro's voice tables hold
+	// one style per phoneme count; a short chunk's own row measurably shifted vowels (the first vowel of a
+	// short leading chunk lost 100-170 Hz of F2 against the same line unsplit), and one row per line keeps
+	// a transmission in one voice.
+	TArray<TArray<int64>> ChunkTokens;
+	TArray<FString> ChunkPhonemes;
+	int32 LinePhonemeCount = 0;
+	double StepStartedAtSeconds = FPlatformTime::Seconds();
+	for (const FSpeechGenTextChunk& Chunk : Chunks)
 	{
-		const TConstArrayView<UE::NNE::FTensorShape> OutputShapes = ModelInstance->GetOutputTensorShapes();
-		if (OutputShapes.Num() != 1 || OutputShapes[0].Volume() > static_cast<uint64>(Waveform.Num()))
+		TArray<int64>& TokenIds = ChunkTokens.AddDefaulted_GetRef();
+		FString& Encoded = ChunkPhonemes.AddDefaulted_GetRef();
+		if (!Phonemizer->Encode(Request.Language, Chunk.Text, TokenIds, Encoded, Error))
 		{
-			Error = TEXT("Kokoro output exceeded the deterministic waveform buffer.");
+			break;
 		}
-		else
-		{
-			Waveform.SetNum(static_cast<int32>(OutputShapes[0].Volume()), EAllowShrinking::No);
-		}
+		LinePhonemeCount += TokenIds.Num() - 2 + (LinePhonemeCount > 0 ? 1 : 0);
 	}
-	else if (Error.IsEmpty())
+	PhonemizeMilliseconds = (FPlatformTime::Seconds() - StepStartedAtSeconds) * 1000.0;
+
+	TArray<float> Style;
+	if (Error.IsEmpty())
 	{
-		Error = TEXT("Kokoro ONNX inference failed.");
+		StepStartedAtSeconds = FPlatformTime::Seconds();
+		LoadVoiceStyle(ResolveRuntimeDirectory(), Request.VoiceBlend, FMath::Min(LinePhonemeCount, VoiceRows), Style, Error);
+		StyleMilliseconds = (FPlatformTime::Seconds() - StepStartedAtSeconds) * 1000.0;
 	}
-	const double InferenceMilliseconds = (FPlatformTime::Seconds() - InferenceStartedAtSeconds) * 1000.0;
+
+	for (int32 ChunkIndex = 0; Error.IsEmpty() && ChunkIndex < Chunks.Num(); ++ChunkIndex)
+	{
+		TArray<int64>& TokenIds = ChunkTokens[ChunkIndex];
+		TArray<float> ChunkWaveform;
+		StepStartedAtSeconds = FPlatformTime::Seconds();
+		const bool bInferred = RunKokoro(*ModelInstance, TokenIds, Style, Request.Speed, ChunkWaveform, Error);
+		InferenceMilliseconds += (FPlatformTime::Seconds() - StepStartedAtSeconds) * 1000.0;
+		if (!bInferred)
+		{
+			break;
+		}
+
+		TokenCount += TokenIds.Num();
+		const int32 PauseBefore = ChunkIndex > 0 ? Chunks[ChunkIndex - 1].PauseAfterMs : 0;
+		AppendChunkWaveform(ChunkWaveform, ChunkIndex > 0, ChunkIndex < Chunks.Num() - 1,
+			FMath::RoundToInt(SampleRate * PauseBefore / 1000.0f), Waveform);
+		Phonemes += ChunkIndex > 0
+			? FString::Printf(TEXT(" [p%d] "), PauseBefore) + ChunkPhonemes[ChunkIndex] : ChunkPhonemes[ChunkIndex];
+	}
 
 	if (!Error.IsEmpty())
 	{
-		UE_LOG(LogSpeechGen, Warning, TEXT("Inference failed Turn=%s Segment=%s Tokens=%d InferenceMs=%.2f: %s"),
+		UE_LOG(LogSpeechGen, Warning, TEXT("Synthesis failed Turn=%s Segment=%s Tokens=%d InferenceMs=%.2f: %s"),
 			*Request.TurnId.ToString(EGuidFormats::DigitsWithHyphensLower),
-			*Request.SegmentId.ToString(EGuidFormats::DigitsWithHyphensLower), TokenIds.Num(),
+			*Request.SegmentId.ToString(EGuidFormats::DigitsWithHyphensLower), TokenCount,
 			InferenceMilliseconds, *Error);
 		AsyncTask(ENamedThreads::GameThread, [WeakThis = TWeakObjectPtr<USpeechGenSubsystem>(this), Request, Error]()
 		{
@@ -628,7 +745,7 @@ void USpeechGenSubsystem::ExecuteRequest(FResolvedRequest Request)
 			TEXT("Completed request Turn=%s Segment=%s Chars=%d Tokens=%d QueueWaitMs=%.2f PhonemizeMs=%.2f StyleMs=%.2f InferenceMs=%.2f PcmMs=%.2f AudioSec=%.2f RTF=%.3f TotalMs=%.2f"),
 			*Request.TurnId.ToString(EGuidFormats::DigitsWithHyphensLower),
 			*Request.SegmentId.ToString(EGuidFormats::DigitsWithHyphensLower), Request.Text.Len(),
-			TokenIds.Num(), QueueWaitMilliseconds, PhonemizeMilliseconds, StyleMilliseconds,
+			TokenCount, QueueWaitMilliseconds, PhonemizeMilliseconds, StyleMilliseconds,
 			InferenceMilliseconds, PcmMilliseconds, Result.DurationSeconds, RealTimeFactor, TotalMilliseconds);
 	}
 

@@ -38,6 +38,8 @@ to the model. The enum display names retain the `Experimental` label in authored
 
 Language selection is explicit; SpeechGen does not guess from the input text. English uses native CMUdict plus Flite CMU letter-to-sound rules. Spanish, Hindi, Italian, and Brazilian Portuguese use native deterministic language rules. Mandarin uses a phrase-first IPA dictionary generated from pinned permissive sources and loaded only when Mandarin is requested. ASCII digits are pronounced digit by digit in the selected language. No Python, eSpeak, Misaki, OpenPhonemizer, or external process is loaded at runtime.
 
+English pronunciation overrides live in Project Settings > Plugins > SpeechGen > Pronunciation Overrides, one word and its ARPAbet each, e.g. in `DefaultGame.ini` under `[/Script/SpeechGen.SpeechGenProjectSettings]`: `+PronunciationOverrides=(Word="lead",Arpabet="L IY1 D")`. An override wins over CMUdict (which keeps only each word's first variant, so `lead` otherwise always reads as the metal) and over the letter-to-sound fallback. Overrides apply when the runtime loads; invalid entries are skipped with a warning. The audio caches are keyed by text, not phonemes, so clear `Saved/SpeechGen/AudioCache` after changing an override.
+
 ### Misaki difference
 
 The official Kokoro Python pipeline uses Misaki and eSpeak for richer contextual normalization and pronunciation. SpeechGen instead uses native deterministic frontends so it can ship as an offline Unreal runtime with no interpreter or copyleft runtime dependency. Diagnostics expose phonemization, unsupported-token, voice-language, and inference failures explicitly.

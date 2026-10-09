@@ -1,6 +1,7 @@
 #include "Phonemizer/KokoroPhonemizer.h"
 
 #include "Phonemizer/KokoroLanguageFrontend.h"
+#include "SpeechGen/SpeechGenProjectSettings.h"
 
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
@@ -149,6 +150,53 @@ bool FKokoroPhonemizer::Initialize(const FString& RuntimeDirectory, FString& Out
 	return Dictionary.Num() > 100000 && Vocab.Num() > 100;
 }
 
+int32 FKokoroPhonemizer::ApplyPronunciationOverrides(const TArray<FSpeechGenPronunciation>& Overrides,
+	TArray<FString>& OutWarnings)
+{
+	int32 Applied = 0;
+	for (const FSpeechGenPronunciation& Override : Overrides)
+	{
+		const FString Word = Override.Word.TrimStartAndEnd().ToLower();
+		bool bWordValid = !Word.IsEmpty();
+		for (const TCHAR Character : Word)
+		{
+			bWordValid &= IsWordCharacter(Character);
+		}
+		if (!bWordValid)
+		{
+			OutWarnings.Add(FString::Printf(
+				TEXT("Pronunciation override '%s' skipped: a word is letters and apostrophes only."), *Override.Word));
+			continue;
+		}
+
+		TArray<FString> Phones;
+		Override.Arpabet.ToUpper().ParseIntoArrayWS(Phones);
+		FString InvalidPhone;
+		for (const FString& Phone : Phones)
+		{
+			FString Base = Phone;
+			if (!Base.IsEmpty() && Base[Base.Len() - 1] >= TEXT('0') && Base[Base.Len() - 1] <= TEXT('2'))
+			{
+				Base.LeftChopInline(1);
+			}
+			if (!GetArpabetMap().Contains(Base))
+			{
+				InvalidPhone = Phone;
+				break;
+			}
+		}
+		if (Phones.IsEmpty() || !InvalidPhone.IsEmpty())
+		{
+			OutWarnings.Add(FString::Printf(TEXT("Pronunciation override '%s' skipped: '%s' is not ARPAbet."),
+				*Override.Word, InvalidPhone.IsEmpty() ? *Override.Arpabet : *InvalidPhone));
+			continue;
+		}
+		Dictionary.Add(Word, MoveTemp(Phones));
+		++Applied;
+	}
+	return Applied;
+}
+
 bool FKokoroPhonemizer::Encode(const ESpeechGenLanguage Language, const FString& Text,
 	TArray<int64>& OutTokenIds, FString& OutPhonemes, FString& OutError) const
 {
@@ -173,12 +221,17 @@ bool FKokoroPhonemizer::Encode(const ESpeechGenLanguage Language, const FString&
 			{
 				AppendWordPhones(Word, Dictionary, Phones);
 				Word.Reset();
-				Phones.Add(TEXT(" "));
 			}
 
+			// Kokoro was trained on misaki output, which joins each token's phonemes with the whitespace that
+			// followed it in the text: punctuation sits on the word before it ("lˈiv bɪfˈɔɹ dˈɑɹk, bʌt").
+			// A space before every mark cost the model its comma and colon pauses.
 			if (FString(TEXT(";:,.!?\"—…()\u201c\u201d")).Contains(FString::Chr(Character)))
 			{
 				Phones.Add(FString::Chr(Character));
+			}
+			else if (!Phones.IsEmpty() && Phones.Last() != TEXT(" "))
+			{
 				Phones.Add(TEXT(" "));
 			}
 		}
@@ -224,6 +277,7 @@ FString FKokoroPhonemizer::NormalizeEnglishText(const FString& Text)
 	Result.ReplaceInline(TEXT("\t"), TEXT(" "));
 	Result.ReplaceInline(TEXT("’"), TEXT("'"));
 	Result.ReplaceInline(TEXT("–"), TEXT("—"));
+	Result.ReplaceInline(TEXT("..."), TEXT("…"));
 
 	FString Expanded;
 	for (int32 Index = 0; Index < Result.Len();)

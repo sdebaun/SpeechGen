@@ -117,6 +117,13 @@ struct SPEECHGEN_API FSpeechGenRequest
 	bool bEnableDiagnostics = false;
 };
 
+/** One stretch of speech between pause markers, and the silence after it. */
+struct FSpeechGenTextChunk
+{
+	FString Text;
+	int32 PauseAfterMs = 0;
+};
+
 enum class ESpeechGenResultSource : uint8
 {
 	Synthesized,

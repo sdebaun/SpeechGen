@@ -4,11 +4,16 @@
 #include "Phonemizer/KokoroLanguageFrontend.h"
 #include "SpeechGen/SpeechGenTypes.h"
 
+struct FSpeechGenPronunciation;
+
 class FKokoroPhonemizer
 {
 public:
 	~FKokoroPhonemizer();
 	bool Initialize(const FString& RuntimeDirectory, FString& OutError);
+	/** Adds or replaces English dictionary entries; returns how many applied, with a warning per rejected entry. */
+	int32 ApplyPronunciationOverrides(const TArray<FSpeechGenPronunciation>& Overrides,
+		TArray<FString>& OutWarnings);
 	bool Encode(ESpeechGenLanguage Language, const FString& Text, TArray<int64>& OutTokenIds,
 		FString& OutPhonemes, FString& OutError) const;
 

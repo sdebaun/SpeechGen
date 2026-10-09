@@ -42,6 +42,9 @@ public:
 	void StopRuntime();
 
 	FGuid SynthesizeAsync(const FSpeechGenRequest& Request);
+
+	/** The phonemes the model would get for this text, without synthesizing. Needs a Ready runtime; any thread. */
+	bool PhonemizeText(ESpeechGenLanguage Language, const FString& Text, FString& OutPhonemes, FString& OutError) const;
 	void SetAuthoredCacheDirectory(const FString& Directory);
 	void CancelTurn(FGuid TurnId);
 	void CancelAll();
@@ -51,6 +54,13 @@ public:
 	FSpeechGenRuntimeStateChanged OnRuntimeStateChanged;
 
 	static FString ResolveRuntimeDirectory();
+
+	/**
+	 * Pause markup: "[p400]" in a request's text splits it, and the parts are synthesized separately and joined
+	 * with 400 ms of silence (the model's own lead-in and tail are trimmed at each seam). Up to 5000 ms.
+	 * "Copy that. [p350] Heading over now." gives a radio reply its cadence.
+	 */
+	static void SplitPauseMarkup(const FString& Text, TArray<FSpeechGenTextChunk>& OutChunks);
 
 	UFUNCTION()
 	static TArray<FString> GetAvailableVoiceIds();
