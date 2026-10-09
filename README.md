@@ -48,9 +48,33 @@ The official Kokoro Python pipeline uses Misaki and eSpeak for richer contextual
 ## Requirements
 
 - Unreal Engine 5.7
-- Windows x64
+- Windows x64, or macOS on Apple silicon (see macOS below)
 - Engine plugins `NNE` and `NNERuntimeORT`
 - Internet access in the editor only while preparing or updating the runtime
+
+## macOS
+
+Tested on an Apple M5 Pro under UE 5.8, CPU inference on the ONNX Runtime that ships with the engine, with no op or precision problems. Synthesis ran 4 to 10 times faster than playback, depending on what else the machine was doing; model load took 0.4 to 1.1 s.
+
+- The runtime folder carries the UBT platform name (`Kokoro/Mac/...`; Windows keeps `Kokoro/Win64/...`), and packaged Mac builds stage it as Windows builds do.
+- The model file is read and loaded on the runtime's worker thread, not the game thread, where the 178 MB read cost a 66 ms frame.
+- `SpeechGenSynth` (above) logs each line's phonemes. `-Phonemize=words.txt [-Report=report.tsv]` writes, per word, the IPA the model gets, its source (override, CMUdict with its variant count, or letter-to-sound) and every CMUdict variant, without synthesizing.
+- Punctuation reaches the model attached to the word before it, as Kokoro's training front end (misaki) writes it.
+- Pause markup: `[p400]` in a request's text splits it there and joins the parts with 400 ms of silence (up to 5000 ms). It suits the clauses of long lines; a short chunk cut off from the words after it loses some vowel quality.
+- The `SpeechGenRadio` module plays a line as a handheld radio transmission (key-up carrier, talk-permit beep, hiss, clarity-driven fading and dropouts, squelch tail) through a source effect chain built from UE's own effect classes, with Light, Mid and Heavy presets (`USpeechGenRadioChannel`). In a game session, `-SpeechGenRadioDemo` plays a scripted dispatch exchange through it and `-SpeechGenBench` measures game-thread cost while synthesizing; the options are in `SpeechGenRadioDemo.h`. `Tools/RadioFx/` has an offline sox version of the chain, and `demo.sh` rebuilds the same exchange from `dispatch-traffic.tsv`.
+- A 2D mono procedural sound plays about 12 dB under its PCM in UE 5.8 on Mac, with or without an effect chain; the radio channel makes it up with the audio component's volume multiplier.
+
+Building and running headless:
+
+- Build the plugin in a host project with `Engine/Build/BatchFiles/Mac/Build.sh UnrealEditor Mac Development -Project=<absolute path>.uproject -TargetType=Editor -NoHotReloadFromIDE` (a C++ host builds its own `<Project>Editor` target instead), adding `-NoUBA` if the plugin folder is a symlink.
+- Commandlets need the module prefix: `-run=SpeechGenEditor.SpeechGenSynth`.
+- `Engine/Binaries/Mac/UnrealEditor` is a launcher that returns at once; use `UnrealEditor-Cmd`, or `UnrealEditor.app/Contents/MacOS/UnrealEditor` for a blocking game session.
+- In a minimal host project, headless runs exit 1 on an engine GameFeatures asset-manager error. This rule in `Config/DefaultGame.ini` silences it; leave it out of a project that cooks, where it breaks the cook:
+
+```ini
+[/Script/Engine.AssetManagerSettings]
++PrimaryAssetTypesToScan=(PrimaryAssetType="GameFeatureData",AssetBaseClass="/Script/GameFeatures.GameFeatureData",bHasBlueprintClasses=False,bIsEditorOnly=False,Directories=((Path="/Game/Unused")),SpecificAssets=,Rules=(Priority=-1,ChunkId=-1,bApplyRecursively=True,CookRule=AlwaysCook))
+```
 
 ## CPU performance decision record
 
